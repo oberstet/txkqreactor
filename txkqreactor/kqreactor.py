@@ -132,7 +132,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
             timeout = int(timeout * 1000) # convert seconds to milliseconds
 
         try:
-            l = self._kq.kevent([], len(self._selectables), timeout)
+            l = self._kq.control([], len(self._selectables), timeout)
         except OSError, e:
             if e[0] == errno.EINTR:
                 return
