@@ -22,5 +22,5 @@ setup (
                   "Operating System :: OS Independent",
                   "Programming Language :: Python",
                   "Topic :: Internet",
-                  "Topic :: Software Development :: Libraries"]
+                  "Topic :: Software Development :: Libraries :: Python Modules"]
 )
