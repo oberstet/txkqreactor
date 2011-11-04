@@ -9,4 +9,4 @@ kqreactor.install()
 
 from twisted.internet import reactor
 
-print reactor.__doc__
+print "Using Twisted reactor class", reactor.__class__
