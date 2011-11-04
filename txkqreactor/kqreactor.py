@@ -127,9 +127,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
     def doKEvent(self, timeout):
         """Poll the kqueue for new events."""
         if timeout is None:
-            timeout = 1000
-        else:
-            timeout = int(timeout * 1000) # convert seconds to milliseconds
+            timeout = 0.001 # 1ms
 
         try:
             l = self._kq.control([], len(self._selectables), timeout)
