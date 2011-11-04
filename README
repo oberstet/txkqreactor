@@ -1,0 +1,12 @@
+This module provides a Twisted reactor for kqueue that works on FreeBSD,
+has no external dependencies, but relies on the built-in kqueue support
+of Python in the select module since Python 2.6.
+
+Usage:
+
+from txkqreactor import kqreactor
+kqreactor.install()
+
+from twisted.internet import reactor
+
+print reactor.__doc__
