@@ -167,10 +167,14 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
     doIteration = doKEvent
 
-
 def install():
-    k = KQueueReactor()
-    main.installReactor(k)
+    """
+    Install the kqueue() reactor.
+    """
+    p = KQueueReactor()
+    from twisted.internet.main import installReactor
+    installReactor(p)
 
 
 __all__ = ["KQueueReactor", "install"]
+
