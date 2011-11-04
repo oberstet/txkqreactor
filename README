@@ -3,6 +3,7 @@ has no external dependencies, but relies on the built-in kqueue support
 of Python in the select module since Python 2.6.
 
 Usage:
+......
 
 from txkqreactor import kqreactor
 kqreactor.install()
@@ -10,3 +11,12 @@ kqreactor.install()
 from twisted.internet import reactor
 
 print "Using Twisted reactor class", reactor.__class__
+
+
+Upload:
+.......
+
+python setup.py register
+python setup.py sdist upload
+
+=> http://pypi.python.org/pypi/txkqreactor

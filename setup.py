@@ -6,6 +6,7 @@ setup (
    description = 'Twisted kqueue reactor',
    long_description = """Twisted reactor built on select.kqueue which comes with Python since version 2.6""",
    author = 'Tavendo GmbH',
+   author_email = 'txkqreactor@tavendo.de',
    url = 'https://github.com/oberstet/txkqreactor',
    platforms = ('Any'),
    install_requires = ['Twisted>=11.0'],
