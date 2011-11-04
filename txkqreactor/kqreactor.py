@@ -10,60 +10,16 @@ listeners or connectors are added)::
     | from twisted.internet import kqreactor
     | kqreactor.install()
 
-This reactor only works on FreeBSD and requires PyKQueue 1.3, which is
-available at:  U{http://people.freebsd.org/~dwhite/PyKQueue/}
-
-
-
-You're going to need to patch PyKqueue::
-
-    =====================================================
-    --- PyKQueue-1.3/kqsyscallmodule.c	Sun Jan 28 21:59:50 2001
-    +++ PyKQueue-1.3/kqsyscallmodule.c.new	Tue Jul 30 18:06:08 2002
-    @@ -137,7 +137,7 @@
-     }
-     
-     statichere PyTypeObject KQEvent_Type = {
-    -  PyObject_HEAD_INIT(NULL)
-    +  PyObject_HEAD_INIT(&PyType_Type)
-       0,                             // ob_size
-       "KQEvent",                     // tp_name
-       sizeof(KQEventObject),         // tp_basicsize
-    @@ -291,13 +291,14 @@
-     
-       /* Build timespec for timeout */
-       totimespec.tv_sec = timeout / 1000;
-    -  totimespec.tv_nsec = (timeout % 1000) * 100000;
-    +  totimespec.tv_nsec = (timeout % 1000) * 1000000;
-     
-       // printf("timespec: sec=%d nsec=%d\\n", totimespec.tv_sec, totimespec.tv_nsec);
-     
-       /* Make the call */
-    -
-    +  Py_BEGIN_ALLOW_THREADS
-       gotNumEvents = kevent (self->fd, changelist, haveNumEvents, triggered, wantNumEvents, &totimespec);
-    +  Py_END_ALLOW_THREADS
-     
-       /* Don't need the input event list anymore, so get rid of it */
-       free (changelist);
-    @@ -361,7 +362,7 @@
-     statichere PyTypeObject KQueue_Type = {
-            /* The ob_type field must be initialized in the module init function
-             * to be portable to Windows without using C++. */
-    -	PyObject_HEAD_INIT(NULL)
-    +	PyObject_HEAD_INIT(&PyType_Type)
-            0,			/*ob_size*/
-            "KQueue",			/*tp_name*/
-            sizeof(KQueueObject),	/*tp_basicsize*/
-
+This implementation depends on Python 2.6 or higher which has kqueue support
+built in the select module.
 """
 
 import errno, sys
 
 from zope.interface import implements
 
-from kqsyscall import EVFILT_READ, EVFILT_WRITE, EV_DELETE, EV_ADD
-from kqsyscall import kqueue, kevent
+from select import kqueue, kevent
+from select import KQ_FILTER_READ, KQ_FILTER_WRITE, KQ_EV_DELETE, KQ_EV_ADD
 
 from twisted.internet.interfaces import IReactorFDSet
 
@@ -73,7 +29,8 @@ from twisted.internet import main, posixbase
 
 class KQueueReactor(posixbase.PosixReactorBase):
     """
-    A reactor that uses kqueue(2)/kevent(2).
+    A reactor that uses kqueue(2)/kevent(2) and relies on Python 2.6 or higher
+    which has built in support for kqueue in the select module.
 
     @ivar _kq: A L{kqueue} which will be used to check for I/O readiness.
 
@@ -110,7 +67,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
 
     def _updateRegistration(self, *args):
-        self._kq.kevent([kevent(*args)], 0, 0)
+        self._kq.control([kevent(*args)], 0, 0)
 
     def addReader(self, reader):
         """Add a FileDescriptor for notification of data available to read.
@@ -119,7 +76,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
         if fd not in self._reads:
             self._selectables[fd] = reader
             self._reads[fd] = 1
-            self._updateRegistration(fd, EVFILT_READ, EV_ADD)
+            self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_ADD)
 
     def addWriter(self, writer):
         """Add a FileDescriptor for notification of data available to write.
@@ -128,7 +85,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
         if fd not in self._writes:
             self._selectables[fd] = writer
             self._writes[fd] = 1
-            self._updateRegistration(fd, EVFILT_WRITE, EV_ADD)
+            self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_ADD)
 
     def removeReader(self, reader):
         """Remove a Selectable for notification of data available to read.
@@ -138,7 +95,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
             del self._reads[fd]
             if fd not in self._writes:
                 del self._selectables[fd]
-            self._updateRegistration(fd, EVFILT_READ, EV_DELETE)
+            self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_DELETE)
 
     def removeWriter(self, writer):
         """Remove a Selectable for notification of data available to write.
@@ -148,7 +105,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
             del self._writes[fd]
             if fd not in self._reads:
                 del self._selectables[fd]
-            self._updateRegistration(fd, EVFILT_WRITE, EV_DELETE)
+            self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_DELETE)
 
     def removeAll(self):
         """
@@ -195,9 +152,9 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
     def _doWriteOrRead(self, selectable, fd, filter):
         try:
-            if filter == EVFILT_READ:
+            if filter == KQ_FILTER_READ:
                 why = selectable.doRead()
-            if filter == EVFILT_WRITE:
+            if filter == KQ_FILTER_WRITE:
                 why = selectable.doWrite()
             if not selectable.fileno() == fd:
                 why = main.CONNECTION_LOST
