@@ -91,16 +91,25 @@ class KQueueReactor(posixbase.PosixReactorBase):
         """
         fd = writer.fileno()
         if fd not in self._writes:
+            self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_ADD)
             self._selectables[fd] = writer
             self._writes[fd] = 1
-            self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_ADD)
 
 
     def removeReader(self, reader):
         """
         Remove a Selectable for notification of data available to read.
         """
-        fd = reader.fileno()
+        try:
+            fd = reader.fileno()
+        except:
+            fd = -1
+        if fd == -1:
+            for fd, fdes in self._selectables.items():
+                if reader is fdes:
+                    break
+            else:
+                return
         if fd in self._reads:
             del self._reads[fd]
             if fd not in self._writes:
@@ -112,7 +121,16 @@ class KQueueReactor(posixbase.PosixReactorBase):
         """
         Remove a Selectable for notification of data available to write.
         """
-        fd = writer.fileno()
+        try:
+            fd = writer.fileno()
+        except:
+            fd = -1
+        if fd == -1:
+            for fd, fdes in self._selectables.items():
+                if writer is fdes:
+                    break
+            else:
+                return
         if fd in self._writes:
             del self._writes[fd]
             if fd not in self._reads:
