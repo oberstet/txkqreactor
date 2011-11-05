@@ -54,6 +54,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
     """
     implements(IReactorFDSet)
 
+
     def __init__(self):
         """
         Initialize kqueue object, file descriptor tracking dictionaries, and the
@@ -67,10 +68,15 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
 
     def _updateRegistration(self, *args):
+        """
+        Private method for changing kqueue registration.
+        """
         self._kq.control([kevent(*args)], 0, 0)
 
+
     def addReader(self, reader):
-        """Add a FileDescriptor for notification of data available to read.
+        """
+        Add a FileDescriptor for notification of data available to read.
         """
         fd = reader.fileno()
         if fd not in self._reads:
@@ -78,8 +84,10 @@ class KQueueReactor(posixbase.PosixReactorBase):
             self._reads[fd] = 1
             self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_ADD)
 
+
     def addWriter(self, writer):
-        """Add a FileDescriptor for notification of data available to write.
+        """
+        Add a FileDescriptor for notification of data available to write.
         """
         fd = writer.fileno()
         if fd not in self._writes:
@@ -87,8 +95,10 @@ class KQueueReactor(posixbase.PosixReactorBase):
             self._writes[fd] = 1
             self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_ADD)
 
+
     def removeReader(self, reader):
-        """Remove a Selectable for notification of data available to read.
+        """
+        Remove a Selectable for notification of data available to read.
         """
         fd = reader.fileno()
         if fd in self._reads:
@@ -97,8 +107,10 @@ class KQueueReactor(posixbase.PosixReactorBase):
                 del self._selectables[fd]
             self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_DELETE)
 
+
     def removeWriter(self, writer):
-        """Remove a Selectable for notification of data available to write.
+        """
+        Remove a Selectable for notification of data available to write.
         """
         fd = writer.fileno()
         if fd in self._writes:
@@ -106,6 +118,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
             if fd not in self._reads:
                 del self._selectables[fd]
             self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_DELETE)
+
 
     def removeAll(self):
         """
@@ -125,7 +138,9 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
 
     def doKEvent(self, timeout):
-        """Poll the kqueue for new events."""
+        """
+        Poll the kqueue for new events.
+        """
         if timeout is None:
             timeout = 0.001 # 1ms
 
@@ -148,6 +163,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
                 continue
             log.callWithLogger(selectable, _drdw, selectable, fd, filter)
 
+
     def _doWriteOrRead(self, selectable, fd, filter):
         try:
             if filter == KQ_FILTER_READ:
@@ -167,6 +183,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
     doIteration = doKEvent
 
+
 def install():
     """
     Install the kqueue() reactor.
@@ -177,4 +194,3 @@ def install():
 
 
 __all__ = ["KQueueReactor", "install"]
-
