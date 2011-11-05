@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup (
    name = 'txkqreactor',
-   version = '0.1',
+   version = '0.2',
    description = 'Twisted kqueue reactor',
    long_description = """Twisted reactor built on select.kqueue which comes with Python since version 2.6""",
    author = 'Tavendo GmbH',
