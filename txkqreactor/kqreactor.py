@@ -19,7 +19,7 @@ import errno, sys
 from zope.interface import implements
 
 from select import kqueue, kevent
-from select import KQ_FILTER_READ, KQ_FILTER_WRITE, KQ_EV_DELETE, KQ_EV_ADD
+from select import KQ_FILTER_READ, KQ_FILTER_WRITE, KQ_EV_DELETE, KQ_EV_ADD, KQ_EV_EOF
 
 from twisted.internet.interfaces import IReactorFDSet
 
@@ -67,11 +67,11 @@ class KQueueReactor(posixbase.PosixReactorBase):
         posixbase.PosixReactorBase.__init__(self)
 
 
-    def _updateRegistration(self, *args):
+    def _updateRegistration(self, fd, filter, op):
         """
         Private method for changing kqueue registration.
         """
-        self._kq.control([kevent(*args)], 0, 0)
+        self._kq.control([kevent(fd, filter, op)], 0, 0)
 
 
     def addReader(self, reader):
@@ -80,9 +80,13 @@ class KQueueReactor(posixbase.PosixReactorBase):
         """
         fd = reader.fileno()
         if fd not in self._reads:
-            self._selectables[fd] = reader
-            self._reads[fd] = 1
-            self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_ADD)
+            try:
+                self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_ADD)
+            except OSError, e:
+                pass
+            finally:
+                self._selectables[fd] = reader
+                self._reads[fd] = 1
 
 
     def addWriter(self, writer):
@@ -91,15 +95,20 @@ class KQueueReactor(posixbase.PosixReactorBase):
         """
         fd = writer.fileno()
         if fd not in self._writes:
-            self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_ADD)
-            self._selectables[fd] = writer
-            self._writes[fd] = 1
+            try:
+                self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_ADD)
+            except OSError, e:
+                pass
+            finally:
+                self._selectables[fd] = writer
+                self._writes[fd] = 1
 
 
     def removeReader(self, reader):
         """
         Remove a Selectable for notification of data available to read.
         """
+        wasLost = False
         try:
             fd = reader.fileno()
         except:
@@ -107,6 +116,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
         if fd == -1:
             for fd, fdes in self._selectables.items():
                 if reader is fdes:
+                    wasLost = True
                     break
             else:
                 return
@@ -114,13 +124,18 @@ class KQueueReactor(posixbase.PosixReactorBase):
             del self._reads[fd]
             if fd not in self._writes:
                 del self._selectables[fd]
-            self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_DELETE)
+            if not wasLost:
+                try:
+                    self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_DELETE)
+                except OSError, e:
+                    pass
 
 
     def removeWriter(self, writer):
         """
         Remove a Selectable for notification of data available to write.
         """
+        wasLost = False
         try:
             fd = writer.fileno()
         except:
@@ -128,6 +143,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
         if fd == -1:
             for fd, fdes in self._selectables.items():
                 if writer is fdes:
+                    wasLost = True
                     break
             else:
                 return
@@ -135,7 +151,11 @@ class KQueueReactor(posixbase.PosixReactorBase):
             del self._writes[fd]
             if fd not in self._reads:
                 del self._selectables[fd]
-            self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_DELETE)
+            if not wasLost:
+                try:
+                    self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_DELETE)
+                except OSError, e:
+                    pass
 
 
     def removeAll(self):
@@ -160,7 +180,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
         Poll the kqueue for new events.
         """
         if timeout is None:
-            timeout = 0.001 # 1ms
+            timeout = 1
 
         try:
             l = self._kq.control([], len(self._selectables), timeout)
@@ -169,35 +189,47 @@ class KQueueReactor(posixbase.PosixReactorBase):
                 return
             else:
                 raise
+
         _drdw = self._doWriteOrRead
         for event in l:
-            why = None
-            fd, filter = event.ident, event.filter
+            fd = event.ident
             try:
                 selectable = self._selectables[fd]
             except KeyError:
                 # Handles the infrequent case where one selectable's
                 # handler disconnects another.
                 continue
-            log.callWithLogger(selectable, _drdw, selectable, fd, filter)
+            else:
+                log.callWithLogger(selectable, _drdw, selectable, fd, event)
 
 
-    def _doWriteOrRead(self, selectable, fd, filter):
-        try:
-            if filter == KQ_FILTER_READ:
-                why = selectable.doRead()
-            if filter == KQ_FILTER_WRITE:
-                why = selectable.doWrite()
-            if not selectable.fileno() == fd:
-                why = main.CONNECTION_LOST
-        except:
-            why = sys.exc_info()[1]
-            log.deferr()
+    def _doWriteOrRead(self, selectable, fd, event):
+        why = None
+        inRead = False
+        filter, flags, data, fflags = event.filter, event.flags, event.data, event.fflags
+
+        if flags & KQ_EV_EOF and data and fflags:
+            why = main.CONNECTION_LOST
+        else:
+            try:
+                if selectable.fileno() == -1:
+                    inRead = False
+                    why = posixbase._NO_FILEDESC
+                else:
+                   if filter == KQ_FILTER_READ:
+                       inRead = True
+                       why = selectable.doRead()
+                   if filter == KQ_FILTER_WRITE:
+                       inRead = False
+                       why = selectable.doWrite()
+            except:
+                # Any exception from application code gets logged and will
+                # cause us to disconnect the selectable.
+                why = sys.exc_info()[1]
+                log.err()
 
         if why:
-            self.removeReader(selectable)
-            self.removeWriter(selectable)
-            selectable.connectionLost(failure.Failure(why))
+            self._disconnectSelectable(selectable, why, inRead)
 
     doIteration = doKEvent
 
