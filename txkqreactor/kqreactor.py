@@ -4,22 +4,34 @@
 """
 A kqueue()/kevent() based implementation of the Twisted main loop.
 
-To install the event loop (and you should do this before any connections,
-listeners or connectors are added)::
+To use this reactor, start your application specifying the kqueue reactor:
 
-    | from twisted.internet import kqreactor
-    | kqreactor.install()
+   twistd ... --reactor kqueue
+
+To install the event loop from code (and you should do this before any
+connections, listeners or connectors are added)::
+
+   from twisted.internet import kqreactor
+   kqreactor.install()
 
 This implementation depends on Python 2.6 or higher which has kqueue support
 built in the select module.
+
+Note, that you should use Python 2.6.5 or higher, since previous implementations
+of select.kqueue had
+
+   http://bugs.python.org/issue5910
+
+not yet fixed.
 """
 
-import errno, sys
+import errno
 
 from zope.interface import implements
 
 from select import kqueue, kevent
-from select import KQ_FILTER_READ, KQ_FILTER_WRITE, KQ_EV_DELETE, KQ_EV_ADD, KQ_EV_EOF
+from select import KQ_FILTER_READ, KQ_FILTER_WRITE, \
+                   KQ_EV_DELETE, KQ_EV_ADD, KQ_EV_EOF
 
 from twisted.internet.interfaces import IReactorFDSet
 
@@ -69,20 +81,22 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
     def _updateRegistration(self, fd, filter, op):
         """
-        Private method for changing kqueue registration.
+        Private method for changing kqueue registration on a given FD
+        filtering for events given filter/op. This will never block and
+        returns nothing.
         """
         self._kq.control([kevent(fd, filter, op)], 0, 0)
 
 
     def addReader(self, reader):
         """
-        Add a FileDescriptor for notification of data available to read.
+        Implement L{IReactorFDSet.addReader}.
         """
         fd = reader.fileno()
         if fd not in self._reads:
             try:
                 self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_ADD)
-            except OSError, e:
+            except OSError:
                 pass
             finally:
                 self._selectables[fd] = reader
@@ -91,13 +105,13 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
     def addWriter(self, writer):
         """
-        Add a FileDescriptor for notification of data available to write.
+        Implement L{IReactorFDSet.addWriter}.
         """
         fd = writer.fileno()
         if fd not in self._writes:
             try:
                 self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_ADD)
-            except OSError, e:
+            except OSError:
                 pass
             finally:
                 self._selectables[fd] = writer
@@ -106,7 +120,7 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
     def removeReader(self, reader):
         """
-        Remove a Selectable for notification of data available to read.
+        Implement L{IReactorFDSet.removeReader}.
         """
         wasLost = False
         try:
@@ -127,13 +141,13 @@ class KQueueReactor(posixbase.PosixReactorBase):
             if not wasLost:
                 try:
                     self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_DELETE)
-                except OSError, e:
+                except OSError:
                     pass
 
 
     def removeWriter(self, writer):
         """
-        Remove a Selectable for notification of data available to write.
+        Implement L{IReactorFDSet.removeWriter}.
         """
         wasLost = False
         try:
@@ -154,13 +168,13 @@ class KQueueReactor(posixbase.PosixReactorBase):
             if not wasLost:
                 try:
                     self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_DELETE)
-                except OSError, e:
+                except OSError:
                     pass
 
 
     def removeAll(self):
         """
-        Remove all selectables, and return a list of them.
+        Implement L{IReactorFDSet.removeAll}.
         """
         return self._removeAll(
             [self._selectables[fd] for fd in self._reads],
@@ -168,10 +182,16 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
 
     def getReaders(self):
+        """
+        Implement L{IReactorFDSet.getReaders}.
+        """
         return [self._selectables[fd] for fd in self._reads]
 
 
     def getWriters(self):
+        """
+        Implement L{IReactorFDSet.getWriters}.
+        """
         return [self._selectables[fd] for fd in self._writes]
 
 
@@ -204,9 +224,14 @@ class KQueueReactor(posixbase.PosixReactorBase):
 
 
     def _doWriteOrRead(self, selectable, fd, event):
+        """
+        Private method called when a FD is ready for reading, writing or was
+        lost. Do the work and raise errors where necessary.
+        """
         why = None
         inRead = False
-        filter, flags, data, fflags = event.filter, event.flags, event.data, event.fflags
+        (filter, flags, data, fflags) = (
+            event.filter, event.flags, event.data, event.fflags)
 
         if flags & KQ_EV_EOF and data and fflags:
             why = main.CONNECTION_LOST
@@ -225,8 +250,8 @@ class KQueueReactor(posixbase.PosixReactorBase):
             except:
                 # Any exception from application code gets logged and will
                 # cause us to disconnect the selectable.
-                why = sys.exc_info()[1]
-                log.err()
+                why = failure.Failure()
+                log.err(why)
 
         if why:
             self._disconnectSelectable(selectable, why, inRead)
