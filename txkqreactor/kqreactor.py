@@ -71,6 +71,11 @@ class KQueueReactor(posixbase.PosixReactorBase):
         """
         Initialize kqueue object, file descriptor tracking dictionaries, and the
         base class.
+
+        See:
+            - http://docs.python.org/library/select.html
+            - www.freebsd.org/cgi/man.cgi?query=kqueue
+            - people.freebsd.org/~jlemon/papers/kqueue.pdf
         """
         self._kq = kqueue()
         self._reads = {}
@@ -86,6 +91,36 @@ class KQueueReactor(posixbase.PosixReactorBase):
         returns nothing.
         """
         self._kq.control([kevent(fd, filter, op)], 0, 0)
+
+
+    def _beforeFork(self):
+        """
+        Twisted-internal method called during daemonization (when application
+        is started via twistd). This is called right before the magic double
+        forking done for daemonization. We cleanly close the kqueue() and later
+        recreate it. This is needed since a) kqueue() are not inherited across
+        forks and b) twistd will create the reactor already before daemonization
+        (and will also add at least 1 reader to the reactor, an instance of
+        twisted.internet.posixbase._UnixWaker).
+
+        See: twisted.scripts._twistd_unix.daemonize()
+        """
+        self._kq.close()
+        self._kq = None
+
+
+    def _afterFork(self):
+        """
+        Twisted-internal method called during daemonization. This is called right
+        after daemonization and recreates the kqueue() and any readers/writers
+        that were added before. Note that you MUST NOT call any reactor methods
+        in between _beforeFork and _afterFork!
+        """
+        self._kq = kqueue()
+        for fd in self._reads:
+            self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_ADD)
+        for fd in self._writes:
+            self._updateRegistration(fd, KQ_FILTER_WRITE, KQ_EV_ADD)
 
 
     def addReader(self, reader):
