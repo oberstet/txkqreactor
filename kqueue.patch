@@ -2,29 +2,89 @@ Index: twisted/scripts/_twistd_unix.py
 ===================================================================
 --- twisted/scripts/_twistd_unix.py	(revision 33114)
 +++ twisted/scripts/_twistd_unix.py	(working copy)
-@@ -156,7 +156,12 @@
+@@ -7,6 +7,7 @@
+ from twisted.python import log, syslog, logfile, usage
+ from twisted.python.util import switchUID, uidFromString, gidFromString
+ from twisted.application import app, service
++from twisted.internet.interfaces import IReactorDaemonize
+ from twisted import copyright
+ 
+ 
+@@ -156,7 +157,22 @@
  
  
  def daemonize():
 -    # See http://www.erlenstar.demon.co.uk/unix/faq_toc.html#TOC16
-+    # See:
-+    # http://www.erlenstar.demon.co.uk/unix/faq_toc.html#TOC16
-+    # http://code.activestate.com/recipes/278731/
++    """
++    Daemonizes the application on Unix. This is done by the usual double
++    forking approach.
++
++    See:
++      [1] http://code.activestate.com/recipes/278731/
++      [2] W. Richard Stevens, "Advanced Programming in the Unix Environment",
++          1992, Addison-Wesley, ISBN 0-201-56317-7
++    """
++
++    ## If the reactor requires hooks to be called for daemonization, call them.
++    ## Currently the only reactor which provides/needs that is KQueueReactor.
 +    from twisted.internet import reactor
-+    if hasattr(reactor, '_beforeFork') and callable(reactor._beforeFork):
-+        reactor._beforeFork()
++    if IReactorDaemonize.providedBy(reactor):
++        reactor.beforeDaemonize()
++
      if os.fork():   # launch child and...
          os._exit(0) # kill off parent
      os.setsid()
-@@ -170,6 +175,8 @@
-             if e.errno != errno.EBADF:
+@@ -171,8 +187,11 @@
                  raise
      os.close(null)
-+    if hasattr(reactor, '_afterFork') and callable(reactor._afterFork):
-+        reactor._afterFork()
+ 
++    if IReactorDaemonize.providedBy(reactor):
++        reactor.afterDaemonize()
  
  
++
+ def launchWithName(name):
+     if name and name != sys.argv[0]:
+         exe = os.path.realpath(sys.executable)
+Index: twisted/internet/interfaces.py
+===================================================================
+--- twisted/internet/interfaces.py	(revision 33114)
++++ twisted/internet/interfaces.py	(working copy)
+@@ -870,6 +870,29 @@
+         """
  
+ 
++class IReactorDaemonize(Interface):
++    """
++    A reactor which provides hooks that need to be called before and after
++    daemonization.
++    """
++
++    def beforeDaemonize():
++        """
++        Hook to be called immediately before daemonization. No reactor methods
++        must be called until L{afterDaemonize} is called.
++
++        @return: C{None}.
++        """
++
++    def afterDaemonize():
++        """
++        Hook to be called immediately after daemonization. This must only be
++        called after L{beforeDaemonize} had been called previously.
++
++        @return: C{None}.
++        """
++
++
+ class IReactorFDSet(Interface):
+     """
+     Implement me to be able to use L{IFileDescriptor} type resources.
+@@ -1899,4 +1922,3 @@
+         @return: a client endpoint
+         @rtype: L{IStreamClientEndpoint}
+         """
+-
 Index: twisted/internet/test/test_fdset.py
 ===================================================================
 --- twisted/internet/test/test_fdset.py	(revision 33114)
@@ -42,7 +102,7 @@ Index: twisted/internet/kqreactor.py
 ===================================================================
 --- twisted/internet/kqreactor.py	(revision 33114)
 +++ twisted/internet/kqreactor.py	(working copy)
-@@ -4,66 +4,34 @@
+@@ -4,68 +4,36 @@
  """
  A kqueue()/kevent() based implementation of the Twisted main loop.
  
@@ -123,8 +183,11 @@ Index: twisted/internet/kqreactor.py
 +from select import KQ_FILTER_READ, KQ_FILTER_WRITE, \
 +                   KQ_EV_DELETE, KQ_EV_ADD, KQ_EV_EOF
  
- from twisted.internet.interfaces import IReactorFDSet
+-from twisted.internet.interfaces import IReactorFDSet
++from twisted.internet.interfaces import IReactorFDSet, IReactorDaemonize
  
+ from twisted.python import log, failure
+ from twisted.internet import main, posixbase
 @@ -73,7 +41,8 @@
  
  class KQueueReactor(posixbase.PosixReactorBase):
@@ -135,9 +198,12 @@ Index: twisted/internet/kqreactor.py
  
      @ivar _kq: A L{kqueue} which will be used to check for I/O readiness.
  
-@@ -97,10 +66,16 @@
+@@ -95,12 +64,18 @@
+         dispatched to the corresponding L{FileDescriptor} instances in
+         C{_selectables}.
      """
-     implements(IReactorFDSet)
+-    implements(IReactorFDSet)
++    implements(IReactorFDSet, IReactorDaemonize)
  
 +
      def __init__(self):
@@ -152,7 +218,7 @@ Index: twisted/internet/kqreactor.py
          """
          self._kq = kqueue()
          self._reads = {}
-@@ -109,50 +84,132 @@
+@@ -109,50 +84,134 @@
          posixbase.PosixReactorBase.__init__(self)
  
  
@@ -167,29 +233,31 @@ Index: twisted/internet/kqreactor.py
 +        self._kq.control([kevent(fd, filter, op)], 0, 0)
  
 +
-+    def _beforeFork(self):
++    def beforeDaemonize(self):
 +        """
-+        Twisted-internal method called during daemonization (when application
-+        is started via twistd). This is called right before the magic double
-+        forking done for daemonization. We cleanly close the kqueue() and later
-+        recreate it. This is needed since a) kqueue() are not inherited across
-+        forks and b) twistd will create the reactor already before daemonization
-+        (and will also add at least 1 reader to the reactor, an instance of
-+        twisted.internet.posixbase._UnixWaker).
-+
-+        See: twisted.scripts._twistd_unix.daemonize()
++        Implement L{IReactorDaemonize.beforeDaemonize}.
 +        """
++        # Twisted-internal method called during daemonization (when application
++        # is started via twistd). This is called right before the magic double
++        # forking done for daemonization. We cleanly close the kqueue() and later
++        # recreate it. This is needed since a) kqueue() are not inherited across
++        # forks and b) twistd will create the reactor already before daemonization
++        # (and will also add at least 1 reader to the reactor, an instance of
++        # twisted.internet.posixbase._UnixWaker).
++        #
++        # See: twisted.scripts._twistd_unix.daemonize()
 +        self._kq.close()
 +        self._kq = None
 +
 +
-+    def _afterFork(self):
++    def afterDaemonize(self):
 +        """
-+        Twisted-internal method called during daemonization. This is called right
-+        after daemonization and recreates the kqueue() and any readers/writers
-+        that were added before. Note that you MUST NOT call any reactor methods
-+        in between _beforeFork and _afterFork!
++        Implement L{IReactorDaemonize.afterDaemonize}.
 +        """
++        # Twisted-internal method called during daemonization. This is called right
++        # after daemonization and recreates the kqueue() and any readers/writers
++        # that were added before. Note that you MUST NOT call any reactor methods
++        # in between beforeDaemonize() and afterDaemonize()!
 +        self._kq = kqueue()
 +        for fd in self._reads:
 +            self._updateRegistration(fd, KQ_FILTER_READ, KQ_EV_ADD)
@@ -302,7 +370,7 @@ Index: twisted/internet/kqreactor.py
          """
          return self._removeAll(
              [self._selectables[fd] for fd in self._reads],
-@@ -160,62 +217,90 @@
+@@ -160,62 +219,90 @@
  
  
      def getReaders(self):
