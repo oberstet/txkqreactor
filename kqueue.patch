@@ -1,6 +1,123 @@
+Index: twisted/test/test_twistd.py
+===================================================================
+--- twisted/test/test_twistd.py	(revision 33219)
++++ twisted/test/test_twistd.py	(working copy)
+@@ -23,6 +23,7 @@
+ from zope.interface.verify import verifyObject
+ 
+ from twisted.trial import unittest
++from twisted.test.test_process import MockOS
+ 
+ from twisted import plugin
+ from twisted.application.service import IServiceMaker
+@@ -34,6 +35,7 @@
+ from twisted.python.versions import Version
+ from twisted.python.components import Componentized
+ from twisted.internet.defer import Deferred
++from twisted.internet.interfaces import IReactorDaemonize
+ from twisted.python.fakepwd import UserDatabase
+ 
+ try:
+@@ -616,7 +618,7 @@
+         self.runner = UnixApplicationRunner({})
+ 
+ 
+-    def daemonize(self):
++    def daemonize(self, daemonize_reactor, daemonize_os):
+         """
+         Indicate that daemonization has happened and change the PID so that the
+         value written to the pidfile can be tested in the daemonization case.
+@@ -806,6 +808,81 @@
+ 
+ 
+ 
++class FakeNonDaemonizingReactor:
++    """
++    A dummy reactor, providing C{beforeDaemonize} and C{afterDaemonize} methods,
++    but not announcing this, and logging whether the methods have been called.
++
++    @ivar _beforeDaemonizeCalled: if C{beforeDaemonize} has been called or not.
++    @type _beforeDaemonizeCalled: C{bool}
++    @ivar _afterDaemonizeCalled: if C{afterDaemonize} has been called or not.
++    @type _afterDaemonizeCalled: C{bool}
++    """
++
++    def __init__(self):
++        self._beforeDaemonizeCalled = False
++        self._afterDaemonizeCalled = False
++
++    def beforeDaemonize(self):
++        self._beforeDaemonizeCalled = True
++
++    def afterDaemonize(self):
++        self._afterDaemonizeCalled = True
++
++
++
++class FakeDaemonizingReactor(FakeNonDaemonizingReactor):
++    """
++    A dummy reactor, providing C{beforeDaemonize} and C{afterDaemonize} methods,
++    announcing this, and logging whether the methods have been called.
++
++    @ivar _beforeDaemonizeCalled: if C{beforeDaemonize} has been called or not.
++    @type _beforeDaemonizeCalled: C{bool}
++    @ivar _afterDaemonizeCalled: if C{afterDaemonize} has been called or not.
++    @type _afterDaemonizeCalled: C{bool}
++    """
++
++    implements(IReactorDaemonize)
++
++
++
++class ReactorDaemonizationTests(unittest.TestCase):
++    """
++    Tests for L{_twistd_unix.daemonize} and L{IReactorDaemonize}.
++    """
++    if _twistd_unix is None:
++        skip = "twistd unix not available"
++
++
++    def test_DaemonizationHooksCalled(self):
++        """
++        Check that L{_twistd_unix.daemonize} indeed calls
++        L{IReactorDaemonize.beforeDaemonize} and
++        L{IReactorDaemonize.afterDaemonize} if the reactor implements
++        L{IReactorDaemonize}.
++        """
++        test_reactor = FakeDaemonizingReactor()
++        test_os = MockOS()
++        _twistd_unix.daemonize(test_reactor, test_os)
++        self.assertTrue(test_reactor._beforeDaemonizeCalled and \
++                        test_reactor._afterDaemonizeCalled)
++
++
++    def test_DaemonizationHooksNotCalled(self):
++        """
++        Check that L{_twistd_unix.daemonize} does NOT call
++        L{IReactorDaemonize.beforeDaemonize} or
++        L{IReactorDaemonize.afterDaemonize} if the reactor does NOT
++        implement L{IReactorDaemonize}.
++        """
++        test_reactor = FakeNonDaemonizingReactor()
++        test_os = MockOS()
++        _twistd_unix.daemonize(test_reactor, test_os)
++        self.assertTrue(not test_reactor._beforeDaemonizeCalled and \
++                        not test_reactor._afterDaemonizeCalled)
++
++
++
+ class DummyReactor(object):
+     """
+     A dummy reactor, only providing a C{run} method and checking that it
+Index: twisted/topfiles/1918.feature
+===================================================================
+--- twisted/topfiles/1918.feature	(revision 0)
++++ twisted/topfiles/1918.feature	(revision 0)
+@@ -0,0 +1 @@
++The kqueue reactor has been revived.
 Index: twisted/scripts/_twistd_unix.py
 ===================================================================
---- twisted/scripts/_twistd_unix.py	(revision 33114)
+--- twisted/scripts/_twistd_unix.py	(revision 33219)
 +++ twisted/scripts/_twistd_unix.py	(working copy)
 @@ -7,6 +7,7 @@
  from twisted.python import log, syslog, logfile, usage
@@ -10,11 +127,19 @@ Index: twisted/scripts/_twistd_unix.py
  from twisted import copyright
  
  
-@@ -156,7 +157,22 @@
+@@ -155,24 +156,41 @@
  
  
- def daemonize():
+ 
+-def daemonize():
 -    # See http://www.erlenstar.demon.co.uk/unix/faq_toc.html#TOC16
+-    if os.fork():   # launch child and...
+-        os._exit(0) # kill off parent
+-    os.setsid()
+-    if os.fork():   # launch child and...
+-        os._exit(0) # kill off parent again.
+-    null = os.open('/dev/null', os.O_RDWR)
++def daemonize(daemonize_reactor, daemonize_os):
 +    """
 +    Daemonizes the application on Unix. This is done by the usual double
 +    forking approach.
@@ -27,28 +152,46 @@ Index: twisted/scripts/_twistd_unix.py
 +
 +    ## If the reactor requires hooks to be called for daemonization, call them.
 +    ## Currently the only reactor which provides/needs that is KQueueReactor.
-+    from twisted.internet import reactor
-+    if IReactorDaemonize.providedBy(reactor):
-+        reactor.beforeDaemonize()
++    if IReactorDaemonize.providedBy(daemonize_reactor):
++        daemonize_reactor.beforeDaemonize()
 +
-     if os.fork():   # launch child and...
-         os._exit(0) # kill off parent
-     os.setsid()
-@@ -171,8 +187,11 @@
++    if daemonize_os.fork():   # launch child and...
++        daemonize_os._exit(0) # kill off parent
++    daemonize_os.setsid()
++    if daemonize_os.fork():   # launch child and...
++        daemonize_os._exit(0) # kill off parent again.
++    null = daemonize_os.open('/dev/null', daemonize_os.O_RDWR)
+     for i in range(3):
+         try:
+-            os.dup2(null, i)
++            daemonize_os.dup2(null, i)
+         except OSError, e:
+             if e.errno != errno.EBADF:
                  raise
-     os.close(null)
+-    os.close(null)
++    daemonize_os.close(null)
  
-+    if IReactorDaemonize.providedBy(reactor):
-+        reactor.afterDaemonize()
++    if IReactorDaemonize.providedBy(daemonize_reactor):
++        daemonize_reactor.afterDaemonize()
  
  
 +
  def launchWithName(name):
      if name and name != sys.argv[0]:
          exe = os.path.realpath(sys.executable)
+@@ -265,7 +283,8 @@
+         if umask is not None:
+             os.umask(umask)
+         if daemon:
+-            daemonize()
++            from twisted.internet import reactor
++            daemonize(reactor, os)
+         if pidfile:
+             f = open(pidfile,'wb')
+             f.write(str(os.getpid()))
 Index: twisted/internet/interfaces.py
 ===================================================================
---- twisted/internet/interfaces.py	(revision 33114)
+--- twisted/internet/interfaces.py	(revision 33219)
 +++ twisted/internet/interfaces.py	(working copy)
 @@ -870,6 +870,29 @@
          """
@@ -87,7 +230,7 @@ Index: twisted/internet/interfaces.py
 -
 Index: twisted/internet/test/test_fdset.py
 ===================================================================
---- twisted/internet/test/test_fdset.py	(revision 33114)
+--- twisted/internet/test/test_fdset.py	(revision 33219)
 +++ twisted/internet/test/test_fdset.py	(working copy)
 @@ -286,7 +286,7 @@
          reactor = self.buildReactor()
@@ -100,7 +243,7 @@ Index: twisted/internet/test/test_fdset.py
              # will not call any methods on Victim after the close, so there's
 Index: twisted/internet/kqreactor.py
 ===================================================================
---- twisted/internet/kqreactor.py	(revision 33114)
+--- twisted/internet/kqreactor.py	(revision 33219)
 +++ twisted/internet/kqreactor.py	(working copy)
 @@ -4,68 +4,36 @@
  """
@@ -485,9 +628,3 @@ Index: twisted/internet/kqreactor.py
  
  
  __all__ = ["KQueueReactor", "install"]
-Index: 1918.feature
-===================================================================
---- 1918.feature	(revision 0)
-+++ 1918.feature	(revision 0)
-@@ -0,0 +1 @@
-+The kqueue reactor has been revived. (#1918)
