@@ -31,7 +31,7 @@ Index: twisted/test/test_twistd.py
  
  
  
-+class FakeNonDaemonizingReactor:
++class FakeNonDaemonizingReactor(object):
 +    """
 +    A dummy reactor, providing C{beforeDaemonize} and C{afterDaemonize} methods,
 +    but not announcing this, and logging whether the methods have been called.
