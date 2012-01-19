@@ -30,8 +30,8 @@ import errno
 from zope.interface import implements
 
 from select import kqueue, kevent
-from select import KQ_FILTER_READ, KQ_FILTER_WRITE, \
-                   KQ_EV_DELETE, KQ_EV_ADD, KQ_EV_EOF
+from select import KQ_FILTER_READ, KQ_FILTER_WRITE
+from select import KQ_EV_DELETE, KQ_EV_ADD, KQ_EV_EOF
 
 from twisted.internet.interfaces import IReactorFDSet, IReactorDaemonize
 
@@ -288,7 +288,8 @@ class KQueueReactor(posixbase.PosixReactorBase):
                 # Any exception from application code gets logged and will
                 # cause us to disconnect the selectable.
                 why = failure.Failure()
-                log.err(why)
+                log.err(why, "An exception was raised from application code" \
+                             " while processing a reactor selectable")
 
         if why:
             self._disconnectSelectable(selectable, why, inRead)
